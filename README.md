@@ -206,5 +206,4 @@ This project demonstrates skills directly applicable to statistics, data analysi
 ## 12. Author
 
 
-**[Your Name]**
-[LinkedIn / Email / Portfolio link]
+**[Jamil Mahida]**
