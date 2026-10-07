@@ -1,867 +1,332 @@
-import os
-import sys
+import warnings
 import pandas as pd
-import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
-from datetime import datetime
-os.makedirs("figures", exist_ok=True)
-import warnings
-warnings.filterwarnings('ignore')
 
-# Set style for better visualizations
-plt.style.use("default")
+warnings.filterwarnings("ignore")
 sns.set_palette("husl")
 
-import pandas as pd
+# ==========================================
+# HELPER FUNCTIONS
+# ==========================================
+def style_ax(ax, title, xlabel=None, ylabel=None, rotate=False, size=13):
+    """Apply a common title, labels and grid to an axis."""
+    ax.set_title(title, fontsize=size, fontweight="bold")
+    if xlabel:
+        ax.set_xlabel(xlabel)
+    if ylabel:
+        ax.set_ylabel(ylabel)
+    if rotate:
+        ax.tick_params(axis="x", rotation=45)
+    ax.grid(alpha=0.3)
 
-# Load dataset
-DATA_PATH = sys.argv[1] if len(sys.argv) > 1 else "Fifa_world_cup_matches.csv"
-if not os.path.exists(DATA_PATH):
-    DATA_PATH = os.path.join("data", "Fifa_world_cup_matches.csv")
-df = pd.read_csv(DATA_PATH)
+
+def scatter_reg(ax, data, x, y, title, color, line_color="black", xlabel=None, ylabel=None):
+    """Scatter plot with a regression line."""
+    sns.scatterplot(data=data, x=x, y=y, color=color, s=90, alpha=0.75,
+                    edgecolor="black", ax=ax)
+    sns.regplot(data=data, x=x, y=y, scatter=False, color=line_color, ax=ax)
+    style_ax(ax, title, xlabel, ylabel)
+
+
+def hist(ax, data, x, title, color, bins=20, xlabel=None, ylabel=None):
+    """Histogram with a KDE curve."""
+    sns.histplot(data=data, x=x, bins=bins, kde=True, color=color,
+                 edgecolor="black", alpha=0.75, ax=ax)
+    style_ax(ax, title, xlabel, ylabel)
+
+
+def new_canvas(title, figsize=(18, 12)):
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+    fig.suptitle(title, fontsize=20, fontweight="bold")
+    return fig, axes
+
+
+# ==========================================
+# LOAD DATA
+# ==========================================
+df = pd.read_csv(r"C:\Users\Admin\OneDrive\Desktop\Fifa_world_cup_matches.csv")
 
 print(f"Dataset shape: {df.shape}")
 print(f"Total matches: {len(df)}")
-
 print("\nDataset Info:")
 df.info()
-
-# Check for missing values
 print("Missing values per column:")
 print(df.isnull().sum().sum())
 
-# Convert date column to datetime
-df['date'] = pd.to_datetime(df['date'])
+# ==========================================
+# FEATURE ENGINEERING
+# ==========================================
+g1, g2 = "number of goals team1", "number of goals team2"
 
-# Create additional features for analysis
-df['total_goals'] = df['number of goals team1'] + df['number of goals team2']
-df['goal_difference'] = abs(df['number of goals team1'] - df['number of goals team2'])
-df['high_scoring'] = df['total_goals'] >= 3
+df["date"] = pd.to_datetime(df["date"])
+df["total_goals"] = df[g1] + df[g2]
+df["goal_difference"] = (df[g1] - df[g2]).abs()
+df["high_scoring"] = df["total_goals"] >= 3
 
-# Convert possession percentages to numeric (remove % and convert)
-df['possession_team1_pct'] = df['possession team1'].str.replace('%', '').astype(float)
-df['possession_team2_pct'] = df['possession team2'].str.replace('%', '').astype(float)
+# Convert possession strings (e.g. "45%") to numbers
+df["possession_team1_pct"] = df["possession team1"].str.replace("%", "").astype(float)
+df["possession_team2_pct"] = df["possession team2"].str.replace("%", "").astype(float)
+df["possession_difference"] = df["possession_team1_pct"] - df["possession_team2_pct"]
 
-# Create match outcome column
+
 def get_match_outcome(row):
-    if row['number of goals team1'] > row['number of goals team2']:
+    if row[g1] > row[g2]:
         return f"{row['team1']} wins"
-    elif row['number of goals team1'] < row['number of goals team2']:
+    if row[g1] < row[g2]:
         return f"{row['team2']} wins"
-    else:
-        return "Draw"
+    return "Draw"
 
-df['match_outcome'] = df.apply(get_match_outcome, axis=1)
 
-# Extract tournament stage
-df['tournament_stage'] = df['category']
+df["match_outcome"] = df.apply(get_match_outcome, axis=1)
+df["tournament_stage"] = df["category"]
+
+# Team 1 efficiency metrics
+df["shooting_accuracy_team1"] = (df["on target attempts team1"] / df["total attempts team1"] * 100).fillna(0)
+df["goal_efficiency_team1"] = (df[g1] / df["total attempts team1"] * 100).fillna(0)
+df["pass_accuracy_team1"] = (df["passes completed team1"] / df["passes team1"] * 100).fillna(0)
 
 print(df)
 
-# Basic statistics
+# ==========================================
+# TEAM STANDINGS TABLE (team_df)
+# NOTE: team_df was not defined in the original code, so it is built here
+# from the match data (3 points for a win, 1 for a draw).
+# ==========================================
+records = []
+for side, other in [(1, 2), (2, 1)]:
+    part = pd.DataFrame({
+        "Team": df[f"team{side}"],
+        "Goals Scored": df[f"number of goals team{side}"],
+        "Goals Conceded": df[f"number of goals team{other}"],
+    })
+    part["Wins"] = (part["Goals Scored"] > part["Goals Conceded"]).astype(int)
+    part["Draws"] = (part["Goals Scored"] == part["Goals Conceded"]).astype(int)
+    part["Losses"] = (part["Goals Scored"] < part["Goals Conceded"]).astype(int)
+    records.append(part)
+
+team_df = pd.concat(records).groupby("Team").agg(
+    Wins=("Wins", "sum"), Draws=("Draws", "sum"), Losses=("Losses", "sum"),
+    **{"Goals Scored": ("Goals Scored", "sum"), "Goals Conceded": ("Goals Conceded", "sum")}
+).reset_index()
+
+team_df["Matches Played"] = team_df["Wins"] + team_df["Draws"] + team_df["Losses"]
+team_df["Goal Difference"] = team_df["Goals Scored"] - team_df["Goals Conceded"]
+team_df["Points"] = team_df["Wins"] * 3 + team_df["Draws"]
+team_df["Win Rate (%)"] = team_df["Wins"] / team_df["Matches Played"] * 100
+team_df = team_df.sort_values(["Points", "Goal Difference", "Goals Scored"],
+                              ascending=False).reset_index(drop=True)
+team_df.insert(0, "Rank", team_df.index + 1)
+
+# ==========================================
+# BASIC STATISTICS
+# ==========================================
 print("Basic Statistics:")
 print(f"Average goals per match: {df['total_goals'].mean():.2f}")
 print(f"Highest scoring match: {df['total_goals'].max()} goals")
 print(f"Most common score difference: {df['goal_difference'].mode()[0]}")
-print(f"Percentage of draws: {(df['goal_difference'] == 0).mean()*100:.1f}%")
-
-# Tournament stages distribution
+print(f"Percentage of draws: {(df['goal_difference'] == 0).mean() * 100:.1f}%")
 print("\nTournament stages:")
-print(df['tournament_stage'].value_counts())
+print(df["tournament_stage"].value_counts())
 
-# =====================================
-# CANVAS 1 : GOALS & POSSESSION ANALYSIS
-# =====================================
+# ==========================================
+# CANVAS 1: GOALS & POSSESSION ANALYSIS
+# ==========================================
+fig, axes = new_canvas("Goals and Possession Analysis")
 
-fig, axes = plt.subplots(2, 2, figsize=(18, 12))
-fig.suptitle(
-    'Goals and Possession Analysis',
-    fontsize=20,
-    fontweight='bold'
-)
+hist(axes[0, 0], df, "total_goals", "Distribution of Total Goals per Match", "royalblue",
+     bins=range(0, df["total_goals"].max() + 2))
 
-# -------------------------------------
-# 1. Distribution of Total Goals
-# -------------------------------------
-sns.histplot(
-    data=df,
-    x='total_goals',
-    bins=range(0, df['total_goals'].max()+2),
-    kde=True,
-    color='royalblue',
-    edgecolor='black',
-    alpha=0.75,
-    ax=axes[0,0]
-)
+sns.boxplot(data=df, x="tournament_stage", y="total_goals", palette="Blues", ax=axes[0, 1])
+style_ax(axes[0, 1], "Goals Distribution by Tournament Stage", rotate=True)
 
-axes[0,0].set_title('Distribution of Total Goals per Match',
-                    fontsize=13,
-                    fontweight='bold')
-axes[0,0].grid(alpha=0.3)
+goal_diff_counts = df["goal_difference"].value_counts().sort_index()
+sns.barplot(x=goal_diff_counts.index, y=goal_diff_counts.values, palette="crest", ax=axes[1, 0])
+style_ax(axes[1, 0], "Match Goal Difference Distribution", "Goal Difference", "Number of Matches")
 
-# -------------------------------------
-# 2. Goals by Tournament Stage
-# -------------------------------------
-sns.boxplot(
-    data=df,
-    x='tournament_stage',
-    y='total_goals',
-    palette='Blues',
-    ax=axes[0,1]
-)
-
-axes[0,1].set_title('Goals Distribution by Tournament Stage',
-                    fontsize=13,
-                    fontweight='bold')
-
-axes[0,1].tick_params(axis='x', rotation=45)
-axes[0,1].grid(alpha=0.3)
-
-# -------------------------------------
-# 3. Goal Difference Distribution
-# -------------------------------------
-goal_diff_counts = df['goal_difference'].value_counts().sort_index()
-
-sns.barplot(
-    x=goal_diff_counts.index,
-    y=goal_diff_counts.values,
-    palette='crest',
-    ax=axes[1,0]
-)
-
-axes[1,0].set_title('Match Goal Difference Distribution',
-                    fontsize=13,
-                    fontweight='bold')
-
-axes[1,0].set_xlabel('Goal Difference')
-axes[1,0].set_ylabel('Number of Matches')
-axes[1,0].grid(alpha=0.3)
-
-# -------------------------------------
-# 4. Possession vs Goals
-# -------------------------------------
-sns.scatterplot(
-    data=df,
-    x='possession_team1_pct',
-    y='number of goals team1',
-    color='darkorange',
-    s=90,
-    alpha=0.75,
-    edgecolor='black',
-    ax=axes[1,1]
-)
-
-sns.regplot(
-    data=df,
-    x='possession_team1_pct',
-    y='number of goals team1',
-    scatter=False,
-    color='red',
-    ax=axes[1,1]
-)
-
-axes[1,1].set_title('Possession vs Goals Scored (Team 1)',
-                    fontsize=13,
-                    fontweight='bold')
-
-axes[1,1].grid(alpha=0.3)
+scatter_reg(axes[1, 1], df, "possession_team1_pct", g1,
+            "Possession vs Goals Scored (Team 1)", "darkorange", line_color="red")
 
 plt.tight_layout()
-plt.savefig("figures/figure_01.png", dpi=150, bbox_inches="tight")
 plt.show()
 
-# =====================================
-# CANVAS 2 : POSSESSION & SHOOTING ANALYSIS
-# =====================================
+# ==========================================
+# CANVAS 2: POSSESSION & SHOOTING ANALYSIS
+# ==========================================
+fig, axes = new_canvas("Possession and Shooting Performance Analysis")
 
-fig, axes = plt.subplots(2, 2, figsize=(18, 12))
-fig.suptitle(
-    'Possession and Shooting Performance Analysis',
-    fontsize=20,
-    fontweight='bold'
-)
+hist(axes[0, 0], df, "possession_difference", "Distribution of Possession Difference", "forestgreen")
 
-# -------------------------------------
-# 1. Possession Difference Distribution
-# -------------------------------------
-df['possession_difference'] = (
-    df['possession_team1_pct']
-    - df['possession_team2_pct']
-)
+sns.boxplot(data=df, x="tournament_stage", y="possession_team1_pct", palette="Greens", ax=axes[0, 1])
+style_ax(axes[0, 1], "Possession Distribution by Tournament Stage", rotate=True)
 
-sns.histplot(
-    data=df,
-    x='possession_difference',
-    bins=20,
-    kde=True,
-    color='forestgreen',
-    edgecolor='black',
-    alpha=0.75,
-    ax=axes[0,0]
-)
-
-axes[0,0].set_title(
-    'Distribution of Possession Difference',
-    fontsize=13,
-    fontweight='bold'
-)
-axes[0,0].grid(alpha=0.3)
-
-# -------------------------------------
-# 2. Possession by Tournament Stage
-# -------------------------------------
-sns.boxplot(
-    data=df,
-    x='tournament_stage',
-    y='possession_team1_pct',
-    palette='Greens',
-    ax=axes[0,1]
-)
-
-axes[0,1].set_title(
-    'Possession Distribution by Tournament Stage',
-    fontsize=13,
-    fontweight='bold'
-)
-axes[0,1].tick_params(axis='x', rotation=45)
-axes[0,1].grid(alpha=0.3)
-
-# -------------------------------------
-# 3. Total Attempts vs Goals
-# -------------------------------------
-sns.scatterplot(
-    data=df,
-    x='total attempts team1',
-    y='number of goals team1',
-    color='darkorange',
-    s=90,
-    alpha=0.75,
-    edgecolor='black',
-    ax=axes[1,0]
-)
-
-sns.regplot(
-    data=df,
-    x='total attempts team1',
-    y='number of goals team1',
-    scatter=False,
-    color='red',
-    ax=axes[1,0]
-)
-
-axes[1,0].set_title(
-    'Total Attempts vs Goals Scored',
-    fontsize=13,
-    fontweight='bold'
-)
-axes[1,0].grid(alpha=0.3)
-
-# -------------------------------------
-# 4. On Target Attempts vs Goals
-# -------------------------------------
-sns.scatterplot(
-    data=df,
-    x='on target attempts team1',
-    y='number of goals team1',
-    color='purple',
-    s=90,
-    alpha=0.75,
-    edgecolor='black',
-    ax=axes[1,1]
-)
-
-sns.regplot(
-    data=df,
-    x='on target attempts team1',
-    y='number of goals team1',
-    scatter=False,
-    color='black',
-    ax=axes[1,1]
-)
-
-axes[1,1].set_title(
-    'On Target Attempts vs Goals Scored',
-    fontsize=13,
-    fontweight='bold'
-)
-axes[1,1].grid(alpha=0.3)
+scatter_reg(axes[1, 0], df, "total attempts team1", g1,
+            "Total Attempts vs Goals Scored", "darkorange", line_color="red")
+scatter_reg(axes[1, 1], df, "on target attempts team1", g1,
+            "On Target Attempts vs Goals Scored", "purple")
 
 plt.tight_layout()
-plt.savefig("figures/figure_02.png", dpi=150, bbox_inches="tight")
 plt.show()
 
-# =====================================
-# CANVAS 3 : DISCIPLINE & MATCH INTENSITY
-# =====================================
+# ==========================================
+# CANVAS 3: DISCIPLINE & MATCH INTENSITY
+# ==========================================
+fig, axes = new_canvas("Discipline and Match Intensity Analysis")
 
-fig, axes = plt.subplots(2, 2, figsize=(18, 12))
-fig.suptitle(
-    'Discipline and Match Intensity Analysis',
-    fontsize=20,
-    fontweight='bold'
-)
+hist(axes[0, 0], df, "shooting_accuracy_team1", "Shooting Accuracy Distribution (Team 1)",
+     "mediumpurple", xlabel="Shooting Accuracy (%)")
 
-# -------------------------------------
-# 1. Shooting Accuracy Distribution
-# -------------------------------------
-df['shooting_accuracy_team1'] = (
-    df['on target attempts team1']
-    / df['total attempts team1'] * 100
-).fillna(0)
-
-sns.histplot(
-    data=df,
-    x='shooting_accuracy_team1',
-    bins=20,
-    kde=True,
-    color='mediumpurple',
-    edgecolor='black',
-    alpha=0.75,
-    ax=axes[0,0]
-)
-
-axes[0,0].set_title(
-    'Shooting Accuracy Distribution (Team 1)',
-    fontsize=13,
-    fontweight='bold'
-)
-axes[0,0].set_xlabel('Shooting Accuracy (%)')
-axes[0,0].grid(alpha=0.3)
-
-# -------------------------------------
-# 2. Disciplinary Actions Distribution
-# -------------------------------------
 disciplinary_data = pd.DataFrame({
-    'Yellow Cards': df['yellow cards team1'] + df['yellow cards team2'],
-    'Red Cards': df['red cards team1'] + df['red cards team2'],
-    'Fouls': df['fouls against team1'] + df['fouls against team2']
+    "Yellow Cards": df["yellow cards team1"] + df["yellow cards team2"],
+    "Red Cards": df["red cards team1"] + df["red cards team2"],
+    "Fouls": df["fouls against team1"] + df["fouls against team2"],
 })
+sns.boxplot(data=disciplinary_data, palette="Set3", ax=axes[0, 1])
+style_ax(axes[0, 1], "Disciplinary Actions Distribution")
 
-sns.boxplot(
-    data=disciplinary_data,
-    palette='Set3',
-    ax=axes[0,1]
-)
+scatter_reg(axes[1, 0], df, "fouls against team1", "yellow cards team1",
+            "Fouls vs Yellow Cards (Team 1)", "crimson")
 
-axes[0,1].set_title(
-    'Disciplinary Actions Distribution',
-    fontsize=13,
-    fontweight='bold'
-)
-axes[0,1].grid(alpha=0.3)
-
-# -------------------------------------
-# 3. Fouls vs Yellow Cards
-# -------------------------------------
-sns.scatterplot(
-    data=df,
-    x='fouls against team1',
-    y='yellow cards team1',
-    color='crimson',
-    s=90,
-    alpha=0.75,
-    edgecolor='black',
-    ax=axes[1,0]
-)
-
-sns.regplot(
-    data=df,
-    x='fouls against team1',
-    y='yellow cards team1',
-    scatter=False,
-    color='black',
-    ax=axes[1,0]
-)
-
-axes[1,0].set_title(
-    'Fouls vs Yellow Cards (Team 1)',
-    fontsize=13,
-    fontweight='bold'
-)
-axes[1,0].grid(alpha=0.3)
-
-# -------------------------------------
-# 4. High Scoring Matches by Stage
-# -------------------------------------
-sns.countplot(
-    data=df,
-    x='tournament_stage',
-    hue='high_scoring',
-    palette='coolwarm',
-    ax=axes[1,1]
-)
-
-axes[1,1].set_title(
-    'High Scoring Matches by Tournament Stage',
-    fontsize=13,
-    fontweight='bold'
-)
-
-axes[1,1].tick_params(axis='x', rotation=45)
-axes[1,1].legend(title='3+ Goals Match')
-axes[1,1].grid(alpha=0.3)
+sns.countplot(data=df, x="tournament_stage", hue="high_scoring", palette="coolwarm", ax=axes[1, 1])
+style_ax(axes[1, 1], "High Scoring Matches by Tournament Stage", rotate=True)
+axes[1, 1].legend(title="3+ Goals Match")
 
 plt.tight_layout()
-plt.savefig("figures/figure_03.png", dpi=150, bbox_inches="tight")
 plt.show()
 
-# =====================================
+# ==========================================
 # ADVANCED PERFORMANCE ANALYSIS
-# =====================================
-
-fig, axes = plt.subplots(2, 2, figsize=(20, 14))
-
-fig.suptitle(
-    'Advanced Team Performance Analysis',
-    fontsize=20,
-    fontweight='bold'
-)
-
-# =====================================
-# 1. PERFORMANCE METRICS CORRELATION
-# =====================================
+# ==========================================
+fig, axes = new_canvas("Advanced Team Performance Analysis", figsize=(20, 14))
 
 performance_metrics = [
-    'total attempts team1',
-    'on target attempts team1',
-    'possession_team1_pct',
-    'passes completed team1',
-    'crosses completed team1',
-    'number of goals team1',
-    'assists team1',
-    'goal inside the penalty area team1'
+    "total attempts team1", "on target attempts team1", "possession_team1_pct",
+    "passes completed team1", "crosses completed team1", g1,
+    "assists team1", "goal inside the penalty area team1",
 ]
+sns.heatmap(df[performance_metrics].corr(), annot=True, cmap="RdYlBu_r", center=0,
+            square=True, linewidths=0.5, fmt=".2f", ax=axes[0, 0])
+axes[0, 0].set_title("Performance Metrics Correlation Matrix", fontsize=13, fontweight="bold")
 
-correlation_matrix = df[performance_metrics].corr()
+sns.boxplot(data=df, x="tournament_stage", y="goal_efficiency_team1", palette="YlOrRd", ax=axes[0, 1])
+style_ax(axes[0, 1], "Goal Efficiency by Tournament Stage",
+         "Tournament Stage", "Goal Efficiency (%)", rotate=True)
 
-sns.heatmap(
-    correlation_matrix,
-    annot=True,
-    cmap='RdYlBu_r',
-    center=0,
-    square=True,
-    linewidths=0.5,
-    fmt='.2f',
-    ax=axes[0,0]
-)
+scatter_reg(axes[1, 0], df, "pass_accuracy_team1", "possession_team1_pct",
+            "Pass Accuracy vs Possession", "forestgreen", line_color="darkgreen",
+            xlabel="Pass Accuracy (%)", ylabel="Possession (%)")
 
-axes[0,0].set_title(
-    'Performance Metrics Correlation Matrix',
-    fontsize=13,
-    fontweight='bold'
-)
-
-# =====================================
-# 2. GOAL EFFICIENCY ANALYSIS
-# =====================================
-
-df['goal_efficiency_team1'] = (
-    df['number of goals team1']
-    / df['total attempts team1'] * 100
-).fillna(0)
-
-sns.boxplot(
-    data=df,
-    x='tournament_stage',
-    y='goal_efficiency_team1',
-    palette='YlOrRd',
-    ax=axes[0,1]
-)
-
-axes[0,1].set_title(
-    'Goal Efficiency by Tournament Stage',
-    fontsize=13,
-    fontweight='bold'
-)
-
-axes[0,1].set_xlabel('Tournament Stage')
-axes[0,1].set_ylabel('Goal Efficiency (%)')
-axes[0,1].tick_params(axis='x', rotation=45)
-axes[0,1].grid(alpha=0.3)
-
-# =====================================
-# 3. PASS ACCURACY VS POSSESSION
-# =====================================
-
-df['pass_accuracy_team1'] = (
-    df['passes completed team1']
-    / df['passes team1'] * 100
-).fillna(0)
-
-sns.scatterplot(
-    data=df,
-    x='pass_accuracy_team1',
-    y='possession_team1_pct',
-    color='forestgreen',
-    s=90,
-    alpha=0.75,
-    edgecolor='black',
-    ax=axes[1,0]
-)
-
-sns.regplot(
-    data=df,
-    x='pass_accuracy_team1',
-    y='possession_team1_pct',
-    scatter=False,
-    color='darkgreen',
-    ax=axes[1,0]
-)
-
-axes[1,0].set_title(
-    'Pass Accuracy vs Possession',
-    fontsize=13,
-    fontweight='bold'
-)
-
-axes[1,0].set_xlabel('Pass Accuracy (%)')
-axes[1,0].set_ylabel('Possession (%)')
-axes[1,0].grid(alpha=0.3)
-
-# =====================================
-# 4. DEFENSIVE PRESSURE ANALYSIS
-# =====================================
-
-sns.scatterplot(
-    data=df,
-    x='defensive pressures applied team1',
-    y='forced turnovers team1',
-    color='crimson',
-    s=90,
-    alpha=0.75,
-    edgecolor='black',
-    ax=axes[1,1]
-)
-
-sns.regplot(
-    data=df,
-    x='defensive pressures applied team1',
-    y='forced turnovers team1',
-    scatter=False,
-    color='black',
-    ax=axes[1,1]
-)
-
-axes[1,1].set_title(
-    'Defensive Pressure vs Forced Turnovers',
-    fontsize=13,
-    fontweight='bold'
-)
-
-axes[1,1].set_xlabel('Defensive Pressures Applied')
-axes[1,1].set_ylabel('Forced Turnovers')
-axes[1,1].grid(alpha=0.3)
+scatter_reg(axes[1, 1], df, "defensive pressures applied team1", "forced turnovers team1",
+            "Defensive Pressure vs Forced Turnovers", "crimson",
+            xlabel="Defensive Pressures Applied", ylabel="Forced Turnovers")
 
 plt.tight_layout()
-plt.savefig("figures/figure_04.png", dpi=150, bbox_inches="tight")
 plt.show()
-
-# ==========================================
-# BUILD TEAM-LEVEL TABLE (team_df)
-# NOTE: the original notebook cell that created team_df was missing from the
-# exported file, so this section was reconstructed from the columns used later.
-# Points: win = 3, draw = 1, loss = 0
-# ==========================================
-t1 = pd.DataFrame({
-    'Team': df['team1'],
-    'GF': df['number of goals team1'],
-    'GA': df['number of goals team2'],
-})
-t2 = pd.DataFrame({
-    'Team': df['team2'],
-    'GF': df['number of goals team2'],
-    'GA': df['number of goals team1'],
-})
-matches = pd.concat([t1, t2], ignore_index=True)
-matches['Win'] = (matches['GF'] > matches['GA']).astype(int)
-matches['Draw'] = (matches['GF'] == matches['GA']).astype(int)
-matches['Loss'] = (matches['GF'] < matches['GA']).astype(int)
-
-team_df = matches.groupby('Team').agg(
-    **{
-        'Matches Played': ('Team', 'size'),
-        'Wins': ('Win', 'sum'),
-        'Draws': ('Draw', 'sum'),
-        'Losses': ('Loss', 'sum'),
-        'Goals Scored': ('GF', 'sum'),
-        'Goals Conceded': ('GA', 'sum'),
-    }
-).reset_index()
-team_df['Goal Difference'] = team_df['Goals Scored'] - team_df['Goals Conceded']
-team_df['Points'] = team_df['Wins'] * 3 + team_df['Draws']
-team_df['Win Rate (%)'] = team_df['Wins'] / team_df['Matches Played'] * 100
-team_df = team_df.sort_values(
-    ['Points', 'Goal Difference', 'Goals Scored'], ascending=False
-).reset_index(drop=True)
-team_df.insert(0, 'Rank', team_df.index + 1)
 
 # ==========================================
 # TOP 10 TEAMS
 # ==========================================
-
 print("\nTOP 10 TEAMS BY TOURNAMENT PERFORMANCE\n")
-
-print(
-    team_df.head(10)[[
-        'Rank',
-        'Team',
-        'Matches Played',
-        'Wins',
-        'Draws',
-        'Losses',
-        'Goals Scored',
-        'Goals Conceded',
-        'Goal Difference',
-        'Points',
-        'Win Rate (%)'
-    ]].to_string(index=False)
-)
-
-# ==========================================
-# TOURNAMENT SUMMARY
-# ==========================================
+top_cols = ["Rank", "Team", "Matches Played", "Wins", "Draws", "Losses", "Goals Scored",
+            "Goals Conceded", "Goal Difference", "Points", "Win Rate (%)"]
+print(team_df.head(10)[top_cols].to_string(index=False))
 
 print("\nTOURNAMENT SUMMARY\n")
-
 print(f"Total Teams Analyzed : {len(team_df)}")
 print(f"Highest Points       : {team_df['Points'].max()}")
 print(f"Most Goals Scored    : {team_df['Goals Scored'].max()}")
 print(f"Best Goal Difference : {team_df['Goal Difference'].max()}")
 print(f"Highest Win Rate (%) : {team_df['Win Rate (%)'].max():.2f}")
 
-# =====================================
+# ==========================================
 # TEAM PERFORMANCE DASHBOARD
-# =====================================
+# ==========================================
+fig, axes = new_canvas("FIFA World Cup 2022 - Team Performance Dashboard", figsize=(20, 14))
 
-fig, axes = plt.subplots(2, 2, figsize=(20, 14))
-
-fig.suptitle(
-    'FIFA World Cup 2022 - Team Performance Dashboard',
-    fontsize=20,
-    fontweight='bold'
-)
-
-# =====================================
-# 1. TOP 10 TEAMS BY POINTS
-# =====================================
-
+# 1. Top 10 teams by points
 top_teams = team_df.head(10)
+sns.barplot(data=top_teams, x="Points", y="Team", palette="viridis", ax=axes[0, 0])
+for i, value in enumerate(top_teams["Points"]):
+    axes[0, 0].text(value + 0.2, i, str(value), va="center", fontweight="bold")
+axes[0, 0].set_title("Top 10 Teams by Points", fontsize=14, fontweight="bold")
+axes[0, 0].grid(axis="x", alpha=0.3)
 
-sns.barplot(
-    data=top_teams,
-    x='Points',
-    y='Team',
-    palette='viridis',
-    ax=axes[0,0]
-)
+# 2. Goals scored vs goals conceded
+sns.scatterplot(data=team_df, x="Goals Conceded", y="Goals Scored", size="Matches Played",
+                hue="Points", palette="viridis", sizes=(50, 500), alpha=0.8,
+                edgecolor="black", ax=axes[0, 1])
+sns.regplot(data=team_df, x="Goals Conceded", y="Goals Scored", scatter=False,
+            color="red", ax=axes[0, 1])
+style_ax(axes[0, 1], "Goals Scored vs Goals Conceded", size=14)
 
-axes[0,0].set_title(
-    'Top 10 Teams by Points',
-    fontsize=14,
-    fontweight='bold'
-)
+# 3. Win rate distribution
+hist(axes[1, 0], team_df, "Win Rate (%)", "Distribution of Team Win Rates", "forestgreen",
+     bins=12, xlabel="Win Rate (%)", ylabel="Frequency")
+mean_win_rate = team_df["Win Rate (%)"].mean()
+axes[1, 0].axvline(mean_win_rate, color="red", linestyle="--", linewidth=2,
+                   label=f"Mean = {mean_win_rate:.1f}%")
+axes[1, 0].legend()
+axes[1, 0].set_title("Distribution of Team Win Rates", fontsize=14, fontweight="bold")
 
-for i, value in enumerate(top_teams['Points']):
-    axes[0,0].text(
-        value + 0.2,
-        i,
-        str(value),
-        va='center',
-        fontweight='bold'
-    )
-
-axes[0,0].grid(axis='x', alpha=0.3)
-
-# =====================================
-# 2. GOALS SCORED VS GOALS CONCEDED
-# =====================================
-
-sns.scatterplot(
-    data=team_df,
-    x='Goals Conceded',
-    y='Goals Scored',
-    size='Matches Played',
-    hue='Points',
-    palette='viridis',
-    sizes=(50, 500),
-    alpha=0.8,
-    edgecolor='black',
-    ax=axes[0,1]
-)
-
-sns.regplot(
-    data=team_df,
-    x='Goals Conceded',
-    y='Goals Scored',
-    scatter=False,
-    color='red',
-    ax=axes[0,1]
-)
-
-axes[0,1].set_title(
-    'Goals Scored vs Goals Conceded',
-    fontsize=14,
-    fontweight='bold'
-)
-
-axes[0,1].grid(alpha=0.3)
-
-# =====================================
-# 3. WIN RATE DISTRIBUTION
-# =====================================
-
-sns.histplot(
-    data=team_df,
-    x='Win Rate (%)',
-    bins=12,
-    kde=True,
-    color='forestgreen',
-    edgecolor='black',
-    alpha=0.75,
-    ax=axes[1,0]
-)
-
-mean_win_rate = team_df['Win Rate (%)'].mean()
-
-axes[1,0].axvline(
-    mean_win_rate,
-    color='red',
-    linestyle='--',
-    linewidth=2,
-    label=f'Mean = {mean_win_rate:.1f}%'
-)
-
-axes[1,0].legend()
-
-axes[1,0].set_title(
-    'Distribution of Team Win Rates',
-    fontsize=14,
-    fontweight='bold'
-)
-
-axes[1,0].set_xlabel('Win Rate (%)')
-axes[1,0].set_ylabel('Frequency')
-axes[1,0].grid(alpha=0.3)
-
-# =====================================
-# 4. GOAL DIFFERENCE VS POINTS
-# =====================================
-
-sns.scatterplot(
-    data=team_df,
-    x='Goal Difference',
-    y='Points',
-    size='Matches Played',
-    hue='Win Rate (%)',
-    palette='plasma',
-    sizes=(50, 500),
-    alpha=0.8,
-    edgecolor='black',
-    ax=axes[1,1]
-)
-
-sns.regplot(
-    data=team_df,
-    x='Goal Difference',
-    y='Points',
-    scatter=False,
-    color='black',
-    ax=axes[1,1]
-)
-
-# Label Top 5 Teams
+# 4. Goal difference vs points (top 5 teams labeled)
+sns.scatterplot(data=team_df, x="Goal Difference", y="Points", size="Matches Played",
+                hue="Win Rate (%)", palette="plasma", sizes=(50, 500), alpha=0.8,
+                edgecolor="black", ax=axes[1, 1])
+sns.regplot(data=team_df, x="Goal Difference", y="Points", scatter=False,
+            color="black", ax=axes[1, 1])
 for _, row in team_df.head(5).iterrows():
-    axes[1,1].annotate(
-        row['Team'],
-        (row['Goal Difference'], row['Points']),
-        xytext=(5, 5),
-        textcoords='offset points',
-        fontsize=9,
-        fontweight='bold'
-    )
-
-axes[1,1].set_title(
-    'Goal Difference vs Points',
-    fontsize=14,
-    fontweight='bold'
-)
-
-axes[1,1].grid(alpha=0.3)
+    axes[1, 1].annotate(row["Team"], (row["Goal Difference"], row["Points"]),
+                        xytext=(5, 5), textcoords="offset points",
+                        fontsize=9, fontweight="bold")
+style_ax(axes[1, 1], "Goal Difference vs Points", size=14)
 
 plt.tight_layout(rect=[0, 0, 1, 0.97])
-plt.savefig("figures/figure_05.png", dpi=150, bbox_inches="tight")
 plt.show()
 
-# FIFA WORLD CUP 2022 - TOURNAMENT SUMMARY
+# ==========================================
+# FIFA WORLD CUP 2022 - STATISTICAL SUMMARY REPORT
+# ==========================================
+yellow = df["yellow cards team1"] + df["yellow cards team2"]
+red = df["red cards team1"] + df["red cards team2"]
+fouls = df["fouls against team1"] + df["fouls against team2"]
+high_scoring_pct = df["high_scoring"].mean() * 100
+possession_corr = df["possession_team1_pct"].corr(df[g1])
+shots_goals_corr = df["total attempts team1"].corr(df[g1])
 
 print("\nFIFA WORLD CUP 2022 - STATISTICAL SUMMARY REPORT")
 
-# TOURNAMENT OVERVIEW
-
 print("\nTOURNAMENT OVERVIEW")
-
 print(f"Total Matches Analyzed              : {len(df)}")
 print(f"Total Goals Scored                  : {df['total_goals'].sum()}")
 print(f"Average Goals per Match             : {df['total_goals'].mean():.2f}")
 print(f"Highest Scoring Match               : {df['total_goals'].max()} Goals")
-print(f"Matches with 3+ Goals               : {(df['total_goals'] >= 3).sum()}")
-print(f"Percentage of High-Scoring Matches  : {(df['total_goals'] >= 3).mean()*100:.1f}%")
+print(f"Matches with 3+ Goals               : {df['high_scoring'].sum()}")
+print(f"Percentage of High-Scoring Matches  : {high_scoring_pct:.1f}%")
 print(f"Most Common Goal Difference         : {df['goal_difference'].mode()[0]}")
 
-# POSSESSION ANALYSIS
-
 print("\nPOSSESSION INSIGHTS")
-
-print(f"Average Possession Difference       : {abs(df['possession_difference']).mean():.2f}%")
-
-possession_corr = df[
-    ['possession_team1_pct', 'number of goals team1']
-].corr().iloc[0, 1]
-
+print(f"Average Possession Difference       : {df['possession_difference'].abs().mean():.2f}%")
 print(f"Possession–Goals Correlation        : {possession_corr:.3f}")
 
-# SHOOTING ANALYSIS
-
 print("\nSHOOTING PERFORMANCE")
-
 print(f"Average Shooting Accuracy           : {df['shooting_accuracy_team1'].mean():.2f}%")
-
-shots_goals_corr = df[
-    ['total attempts team1', 'number of goals team1']
-].corr().iloc[0, 1]
-
 print(f"Shots–Goals Correlation             : {shots_goals_corr:.3f}")
 
-# DISCIPLINARY ANALYSIS
-
 print("\nDISCIPLINARY INSIGHTS")
-
-print(f"Average Yellow Cards/Match          : {(df['yellow cards team1'] + df['yellow cards team2']).mean():.2f}")
-print(f"Average Red Cards/Match             : {(df['red cards team1'] + df['red cards team2']).mean():.2f}")
-print(f"Average Fouls/Match                 : {(df['fouls against team1'] + df['fouls against team2']).mean():.2f}")
-
-# TOURNAMENT STRUCTURE
+print(f"Average Yellow Cards/Match          : {yellow.mean():.2f}")
+print(f"Average Red Cards/Match             : {red.mean():.2f}")
+print(f"Average Fouls/Match                 : {fouls.mean():.2f}")
 
 print("\nTOURNAMENT STRUCTURE")
-
-stage_summary = (
-    df['tournament_stage']
-    .value_counts()
-    .reset_index()
-)
-
+stage_summary = df["tournament_stage"].value_counts().reset_index()
 for _, row in stage_summary.iterrows():
     print(f"{row['tournament_stage']:<25} : {row['count']} Matches")
 
-# KEY TAKEAWAYS
-
 print("\nKEY TAKEAWAYS")
-
 print(f"• The tournament produced an average of {df['total_goals'].mean():.2f} goals per match.")
-print(f"• {(df['total_goals'] >= 3).mean()*100:.1f}% of matches were classified as high-scoring (3+ goals).")
+print(f"• {high_scoring_pct:.1f}% of matches were classified as high-scoring (3+ goals).")
 print(f"• The correlation between possession and goals was {possession_corr:.3f}.")
 print(f"• The correlation between total attempts and goals scored was {shots_goals_corr:.3f}.")
-print(f"• Teams received an average of {(df['yellow cards team1'] + df['yellow cards team2']).mean():.2f} yellow cards per match.")
+print(f"• Teams received an average of {yellow.mean():.2f} yellow cards per match.")
 
 print("\nEND OF REPORT")
